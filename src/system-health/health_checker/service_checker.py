@@ -163,13 +163,9 @@ class ServiceChecker(HealthChecker):
                 # Check if this is a Kubernetes-managed container
                 labels = ctr.labels or {}
                 ns = labels.get("io.kubernetes.pod.namespace")
-                dtype = labels.get("io.kubernetes.docker.type")
-                kname = labels.get("io.kubernetes.container.name")
 
                 if ns == "sonic":
-                    # container which has kube label
-                    if dtype == "container" and kname and kname not in ("<no value>", "POD"):
-                        ctr.name = kname
+                    continue
 
                 # Skip kubesonic managed containers in the whitelist
                 if ctr.name in ServiceChecker.CONTAINER_K8S_WHITELIST:
