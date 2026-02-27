@@ -361,7 +361,10 @@ def test_service_checker_check_by_monit(mock_run):
 @patch('health_checker.utils.run_command')
 @patch('swsscommon.swsscommon.ConfigDBConnector')
 def test_service_checker_k8s_containers(mock_config_db, mock_run, mock_docker_client):
-    """Test that service checker recognizes Kubernetes-managed containers by labels"""
+    """Test that all Kubernetes-managed containers (namespace=sonic) are skipped
+    from current running containers. The whitelist controls which features are
+    excluded from expected running containers to avoid false 'not running' alerts.
+    """
     setup()
     mock_db_data = MagicMock()
     mock_get_table = MagicMock()
@@ -379,7 +382,7 @@ def test_service_checker_k8s_containers(mock_config_db, mock_run, mock_docker_cl
             'has_per_asic_scope': 'False',
         }
     }
-    
+
     # Mock Kubernetes containers with labels
     mock_containers = MagicMock()
     mock_snmp_container = MagicMock()
@@ -389,7 +392,7 @@ def test_service_checker_k8s_containers(mock_config_db, mock_run, mock_docker_cl
         'io.kubernetes.docker.type': 'container',
         'io.kubernetes.container.name': 'snmp'
     }
-    
+
     mock_restapi_container = MagicMock()
     mock_restapi_container.name = 'k8s_restapi_restapi-pod-test_sonic_87654321-4321-4321-4321-cba987654321_0'
     mock_restapi_container.labels = {
@@ -397,36 +400,46 @@ def test_service_checker_k8s_containers(mock_config_db, mock_run, mock_docker_cl
         'io.kubernetes.docker.type': 'container',
         'io.kubernetes.container.name': 'restapi'
     }
-    
-    # Mock POD container (should be ignored)
+
+    # Mock POD container (should also be skipped as namespace=sonic)
     mock_pod_container = MagicMock()
     mock_pod_container.name = 'k8s_POD_snmp-pod-test_sonic_12345678-1234-1234-1234-123456789abc_0'
     mock_pod_container.labels = {
         'io.kubernetes.pod.namespace': 'sonic',
-        'io.kubernetes.docker.type': 'container',
+        'io.kubernetes.docker.type': 'podsandbox',
         'io.kubernetes.container.name': 'POD'
     }
-    
+
     mock_containers.list = MagicMock(return_value=[mock_snmp_container, mock_restapi_container, mock_pod_container])
     mock_docker_client_object = MagicMock()
     mock_docker_client.return_value = mock_docker_client_object
     mock_docker_client_object.containers = mock_containers
-    
+
     mock_run.return_value = mock_supervisorctl_output
-    
+
     checker = ServiceChecker()
     config = Config()
     checker.check(config)
-    
-    # Verify k8s containers are recognized by their label names
+
+    # All K8s containers (namespace=sonic) are skipped from running containers
     running_containers = checker.get_current_running_containers()
-    assert 'snmp' in running_containers
-    assert 'restapi' in running_containers
+    assert 'snmp' not in running_containers
+    assert 'restapi' not in running_containers
     assert 'POD' not in running_containers
-    
-    # Verify k8s containers are NOT added to critical processes (k8s has its own health checks)
+    # The raw K8s container names should also not appear
+    assert mock_snmp_container.name not in running_containers
+    assert mock_restapi_container.name not in running_containers
+
+    # No K8s containers should be monitored for critical processes
     assert 'snmp' not in checker.container_critical_processes
     assert 'restapi' not in checker.container_critical_processes
+
+    # restapi is in CONTAINER_K8S_WHITELIST, so it's excluded from expected containers
+    # snmp is NOT in whitelist, so it's still expected (will trigger 'not running' alert)
+    feature_table = mock_get_table.return_value
+    expected, _ = checker.get_expected_running_containers(feature_table)
+    assert 'snmp' in expected
+    assert 'restapi' not in expected
 
 
 @patch('swsscommon.swsscommon.ConfigDBConnector.connect', MagicMock())
@@ -436,7 +449,10 @@ def test_service_checker_k8s_containers(mock_config_db, mock_run, mock_docker_cl
 @patch('health_checker.utils.run_command')
 @patch('swsscommon.swsscommon.ConfigDBConnector')
 def test_service_checker_mixed_containers(mock_config_db, mock_run, mock_docker_client):
-    """Test that service checker handles both regular Docker and Kubernetes containers"""
+    """Test that service checker handles both regular Docker and Kubernetes containers.
+    Regular Docker containers are monitored normally.
+    K8s containers (namespace=sonic) are always skipped from running containers.
+    """
     setup()
     mock_db_data = MagicMock()
     mock_get_table = MagicMock()
@@ -454,15 +470,15 @@ def test_service_checker_mixed_containers(mock_config_db, mock_run, mock_docker_
             'has_per_asic_scope': 'False',
         }
     }
-    
+
     mock_containers = MagicMock()
-    
+
     # Regular Docker container
     mock_swss_container = MagicMock()
     mock_swss_container.name = 'swss'
     mock_swss_container.labels = {}
-    
-    # Kubernetes container
+
+    # Kubernetes container (not in whitelist, but still skipped because namespace=sonic)
     mock_database_container = MagicMock()
     mock_database_container.name = 'k8s_database_database-pod-test_sonic_12345678_0'
     mock_database_container.labels = {
@@ -470,26 +486,125 @@ def test_service_checker_mixed_containers(mock_config_db, mock_run, mock_docker_
         'io.kubernetes.docker.type': 'container',
         'io.kubernetes.container.name': 'database'
     }
-    
+
     mock_containers.list = MagicMock(return_value=[mock_swss_container, mock_database_container])
     mock_docker_client_object = MagicMock()
     mock_docker_client.return_value = mock_docker_client_object
     mock_docker_client_object.containers = mock_containers
-    
+
     mock_run.return_value = mock_supervisorctl_output
-    
+
     checker = ServiceChecker()
     config = Config()
     checker.check(config)
-    
-    # Verify both types of containers are recognized
+
+    # Regular Docker container is in running containers
     running_containers = checker.get_current_running_containers()
     assert 'swss' in running_containers
-    assert 'database' in running_containers
-    
-    # Verify only regular Docker containers are monitored for critical processes
+    # K8s container is skipped (namespace=sonic)
+    assert 'database' not in running_containers
+
+    # Only regular Docker containers are monitored for critical processes
     assert 'swss' in checker.container_critical_processes
-    assert 'database' not in checker.container_critical_processes  # k8s container, not monitored
+    assert 'database' not in checker.container_critical_processes
+
+
+@patch('swsscommon.swsscommon.ConfigDBConnector.connect', MagicMock())
+@patch('health_checker.service_checker.ServiceChecker._get_container_folder', MagicMock(return_value=test_path))
+@patch('sonic_py_common.multi_asic.is_multi_asic', MagicMock(return_value=False))
+@patch('docker.DockerClient')
+@patch('health_checker.utils.run_command')
+@patch('swsscommon.swsscommon.ConfigDBConnector')
+def test_service_checker_k8s_whitelist(mock_config_db, mock_run, mock_docker_client):
+    """Test that containers in CONTAINER_K8S_WHITELIST are excluded from both
+    expected running containers and current running containers.
+    """
+    setup()
+    mock_db_data = MagicMock()
+    mock_get_table = MagicMock()
+    mock_db_data.get_table = mock_get_table
+    mock_config_db.return_value = mock_db_data
+    mock_get_table.return_value = {
+        'snmp': {
+            'state': 'enabled',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'False',
+        },
+        'telemetry': {
+            'state': 'enabled',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'False',
+        },
+        'acms': {
+            'state': 'enabled',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'False',
+        },
+        'restapi': {
+            'state': 'enabled',
+            'has_global_scope': 'True',
+            'has_per_asic_scope': 'False',
+        }
+    }
+
+    mock_containers = MagicMock()
+
+    # Regular Docker container (not whitelisted)
+    mock_snmp_container = MagicMock()
+    mock_snmp_container.name = 'snmp'
+    mock_snmp_container.labels = {}
+
+    # Whitelisted containers running as regular Docker containers
+    mock_telemetry_container = MagicMock()
+    mock_telemetry_container.name = 'telemetry'
+    mock_telemetry_container.labels = {}
+
+    mock_acms_container = MagicMock()
+    mock_acms_container.name = 'acms'
+    mock_acms_container.labels = {}
+
+    mock_restapi_container = MagicMock()
+    mock_restapi_container.name = 'restapi'
+    mock_restapi_container.labels = {}
+
+    mock_containers.list = MagicMock(return_value=[
+        mock_snmp_container, mock_telemetry_container, mock_acms_container, mock_restapi_container
+    ])
+    mock_docker_client_object = MagicMock()
+    mock_docker_client.return_value = mock_docker_client_object
+    mock_docker_client_object.containers = mock_containers
+
+    mock_run.return_value = mock_supervisorctl_output
+
+    checker = ServiceChecker()
+    config = Config()
+    checker.check(config)
+
+    # Verify whitelisted containers are excluded from expected running containers
+    feature_table = mock_get_table.return_value
+    expected, feature_dict = checker.get_expected_running_containers(feature_table)
+    assert 'snmp' in expected
+    assert 'telemetry' not in expected
+    assert 'acms' not in expected
+    assert 'restapi' not in expected
+
+    # Verify whitelisted containers are excluded from current running containers
+    running_containers = checker.get_current_running_containers()
+    assert 'snmp' in running_containers
+    assert 'telemetry' not in running_containers
+    assert 'acms' not in running_containers
+    assert 'restapi' not in running_containers
+
+    # Verify only non-whitelisted containers are monitored for critical processes
+    assert 'snmp' in checker.container_critical_processes
+    assert 'telemetry' not in checker.container_critical_processes
+    assert 'acms' not in checker.container_critical_processes
+    assert 'restapi' not in checker.container_critical_processes
+
+    # Verify whitelisted containers don't trigger 'not running' alerts
+    assert 'telemetry' not in checker._info
+    assert 'acms' not in checker._info
+    assert 'restapi' not in checker._info
 
 
 def test_hardware_checker():
