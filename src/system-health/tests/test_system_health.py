@@ -361,7 +361,7 @@ def test_service_checker_check_by_monit(mock_run):
 @patch('health_checker.utils.run_command')
 @patch('swsscommon.swsscommon.ConfigDBConnector')
 def test_service_checker_k8s_containers(mock_config_db, mock_run, mock_docker_client):
-    """Test that all Kubernetes-managed containers (namespace=sonic) are skipped
+    """Test that all Kubernetes-managed containers (any non-empty namespace) are skipped
     from current running containers. The whitelist controls which features are
     excluded from expected running containers to avoid false 'not running' alerts.
     """
@@ -421,7 +421,7 @@ def test_service_checker_k8s_containers(mock_config_db, mock_run, mock_docker_cl
     config = Config()
     checker.check(config)
 
-    # All K8s containers (namespace=sonic) are skipped from running containers
+    # All K8s containers (any non-empty namespace) are skipped from running containers
     running_containers = checker.get_current_running_containers()
     assert 'snmp' not in running_containers
     assert 'restapi' not in running_containers
@@ -451,7 +451,7 @@ def test_service_checker_k8s_containers(mock_config_db, mock_run, mock_docker_cl
 def test_service_checker_mixed_containers(mock_config_db, mock_run, mock_docker_client):
     """Test that service checker handles both regular Docker and Kubernetes containers.
     Regular Docker containers are monitored normally.
-    K8s containers (namespace=sonic) are always skipped from running containers.
+    K8s containers (any non-empty namespace) are always skipped from running containers.
     """
     setup()
     mock_db_data = MagicMock()
@@ -478,7 +478,7 @@ def test_service_checker_mixed_containers(mock_config_db, mock_run, mock_docker_
     mock_swss_container.name = 'swss'
     mock_swss_container.labels = {}
 
-    # Kubernetes container (not in whitelist, but still skipped because namespace=sonic)
+    # Kubernetes container (not in whitelist, but still skipped because it has a K8s namespace)
     mock_database_container = MagicMock()
     mock_database_container.name = 'k8s_database_database-pod-test_sonic_12345678_0'
     mock_database_container.labels = {
@@ -501,7 +501,7 @@ def test_service_checker_mixed_containers(mock_config_db, mock_run, mock_docker_
     # Regular Docker container is in running containers
     running_containers = checker.get_current_running_containers()
     assert 'swss' in running_containers
-    # K8s container is skipped (namespace=sonic)
+    # K8s container is skipped (has non-empty namespace)
     assert 'database' not in running_containers
 
     # Only regular Docker containers are monitored for critical processes

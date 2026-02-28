@@ -164,7 +164,7 @@ class ServiceChecker(HealthChecker):
                 labels = ctr.labels or {}
                 ns = labels.get("io.kubernetes.pod.namespace")
 
-                if ns == "sonic":
+                if ns:
                     continue
 
                 # Skip kubesonic managed containers in the whitelist
